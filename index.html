@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Projector Simulator — designed & built by Moon -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -130,7 +131,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--txt);font
 <body>
 <div id="app">
   <div id="topbar">
-    <div id="logo">PROJECTOR SIMULATOR<span> / 프로젝터 시뮬레이터</span></div>
+    <div id="logo">PROJECTOR SIMULATOR<span> / 프로젝터 시뮬레이터 · by Moon</span></div>
     <div class="modes" id="viewModes">
       <button data-m="0" class="on">테스트 그리드</button>
       <button data-m="2">화이트 라이트</button>
@@ -271,7 +272,7 @@ const stage = {
   wallGain:1.0, wallMode:'rear',// 기본 벽 광학 (게인·리어 투과)
   wallW:12, wallH:5.5, wallX:0, wallZ:-6, wallRy:0,
   stageW:14, stageD:12,
-  floorRefl:14, wallOn:true, floorOn:true, shadows:true, derate:100,
+  floorRefl:14, wallOn:true, floorOn:true, shadows:true, derate:100, capFps:30,
   unit:'m',                     // 모델 임포트 단위
 };
 function ambientLux(){ return AMB_PRESETS[stage.ambPreset].lux * stage.ambPct/100; }
@@ -832,7 +833,7 @@ function loadMedia(file, onReady){
     if(isVideo){
       const v = document.createElement('video');
       v.loop = true; v.muted = true; v.playsInline = true;
-      v.onloadeddata = ()=>{ c.el = v; c.ready = true; v.play().catch(()=>{}); onReady(c); };
+      v.onloadeddata = ()=>{ c.el = v; c.ready = true; attachFrameSync(c); v.play().catch(()=>{}); onReady(c); };
       v.onerror = ()=>toast('영상 코덱을 재생할 수 없어요. mp4(H.264) 또는 webm을 권장해요.');
       v.src = dataURL;
     } else {
@@ -845,8 +846,21 @@ function loadMedia(file, onReady){
   rd.readAsDataURL(file);
   return c;
 }
+/* 프레임 동기화: 새 비디오 프레임 도착 시점에만 타일을 갱신 (저더 제거) */
+function attachFrameSync(c){
+  c.frameReady = true;
+  if('requestVideoFrameCallback' in HTMLVideoElement.prototype){
+    c.hasRVFC = true;
+    const cb = ()=>{
+      c.frameReady = true;
+      if(c.el && !c.disposed) c.el.requestVideoFrameCallback(cb);
+    };
+    c.el.requestVideoFrameCallback(cb);
+  }
+}
 function stopMedia(c){
   if(!c) return;
+  c.disposed = true;
   if(c.stream){ c.stream.getTracks().forEach(t=>t.stop()); }
   if(c.type==='video' && c.el && !c.stream){ c.el.pause(); c.el.removeAttribute('src'); c.el.load(); }
 }
@@ -859,7 +873,7 @@ async function startLiveCapture(o, isLED){
   let stream;
   try{
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video:{ frameRate:{max:30} }, audio:false
+      video:{ frameRate:{max: stage.capFps||30} }, audio:false
     });
   }catch(err){
     if(err && err.name==='NotAllowedError')
@@ -873,6 +887,7 @@ async function startLiveCapture(o, isLED){
              live:true, stream, crop:{x:0, y:0, w:1, h:1}};
   v.onloadeddata = ()=>{
     c.ready = true;
+    attachFrameSync(c);
     v.play().catch(()=>{});
     if(isLED) rebuildLED(o);
     renderProps();
@@ -959,9 +974,11 @@ function pushUniforms(){
       const ar = o.params.resW / o.params.resH;
       if(c.type === 'video'){
         const fresh = tileOwner[i] !== key;
-        // 라이브 캡처는 두 프레임에 한 번만 갱신 (30fps 상당, 드로우 비용 절감)
-        if(fresh || (!c.el.paused && (!c.live || frame % 2 === 0))){
-          if(drawContentTile(i, c.el, ar, c.crop)) tileOwner[i] = key;
+        // rVFC: 새 프레임 도착 시에만 드로우 (저더 없음) / 미지원 브라우저는 격프레임 폴백
+        const wantDraw = c.hasRVFC ? c.frameReady
+                                   : (!c.live || frame % 2 === 0);
+        if(fresh || (!c.el.paused && wantDraw)){
+          if(drawContentTile(i, c.el, ar, c.crop)){ tileOwner[i] = key; c.frameReady = false; }
         }
       } else if(tileOwner[i] !== key){
         if(drawContentTile(i, c.el, ar, c.crop)) tileOwner[i] = key;
@@ -1546,6 +1563,12 @@ function renderStage(){
   dn.style.cssText='font-size:10px;color:var(--txt2);line-height:1.6;margin-top:4px';
   dn.textContent = '100% = ANSI 스펙 그대로 (제조사 계산기와 일치). 램프 경년·렌즈 오염 여유를 두려면 85~90%를 권장해요.';
   g.appendChild(dn);
+  g.appendChild(selRow('라이브 캡처', ['표준 30fps (권장·저부하)','부드럽게 60fps (데스크톱)'], (stage.capFps===60)?1:0,
+    v=>{stage.capFps = v===1 ? 60 : 30;}));
+  const cn = document.createElement('div');
+  cn.style.cssText='font-size:10px;color:var(--txt2);line-height:1.6;margin-top:4px';
+  cn.textContent = '새로 연결하는 라이브 캡처부터 적용돼요. 60fps는 라이브 1~2개·데스크톱에서 권장.';
+  g.appendChild(cn);
   right.appendChild(g);
 }
 
@@ -2219,6 +2242,8 @@ function exportTopViewInner(){
   x.fillStyle='#101010'; x.fillRect(0,0,W,H);
   x.fillStyle='#21F1A8'; x.font='600 22px monospace';
   x.fillText('PROJECTOR SIMULATOR — TOP VIEW (리그 도면)', 24, 38);
+  x.fillStyle='#9A9A9A'; x.font='12px monospace';
+  x.fillText('by Moon', W-90, 38);
   x.fillStyle='#8B95A7'; x.font='13px monospace';
   const now=new Date();
   x.fillText(`${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')} · 격자 1칸 = 1 m · 단위 mm · 위쪽 = 무대 안(-Z)`, 24, 62);
@@ -2334,6 +2359,8 @@ document.getElementById('btnPublish').onclick = ()=>{
   });
   const surfs = objects.filter(o=>o.type==='surf');
   if(surfs.length) lines.push(`서페이스 ${surfs.length}개: ` + surfs.map(s=>s.name).join(', '));
+  lines.push('');
+  lines.push('— Projector Simulator · designed & built by Moon —');
   document.getElementById('report').textContent = lines.join('\n');
   document.getElementById('modal').style.display = 'flex';
   document.getElementById('mPng').onclick = ()=>{
@@ -2349,7 +2376,7 @@ document.getElementById('mJson').onclick = ()=>download('projector_simulator_sce
 /* ---------- HUD ---------- */
 const hud = document.getElementById('hud');
 function updateHUD(){
-  let t = `오브젝트 ${objects.length} · 프로젝터 ${objects.filter(o=>o.type==='proj').length}/${MAXP}`;
+  let t = `오브젝트 ${objects.length} · 프로젝터 ${objects.filter(o=>o.type==='proj').length}/${MAXP} · made by Moon`;
   if(selected && selected.type==='proj'){
     const hit = centerHit(selected);
     if(hit) t += `\n${selected.name} → ${hit.d.toFixed(1)}m · ${hit.w.toFixed(1)}×${hit.h.toFixed(1)}m · ${hit.lux.toFixed(0)} lux`;
@@ -2396,7 +2423,8 @@ function updateLEDVideos(){
   objects.forEach(o=>{
     const s = o.ledSrc;
     if(o.type==='led' && s && s.type==='video' && s.ready && !s.el.paused){
-      if(s.live && frame % 2 !== 0) return;   // 라이브는 30fps 상당
+      if(s.hasRVFC){ if(!s.frameReady) return; s.frameReady = false; }
+      else if(s.live && frame % 2 !== 0) return;   // 폴백: 격프레임
       const t = o.mesh.material.map;
       if(t && t.userData && t.userData.redraw) t.userData.redraw();
     }
